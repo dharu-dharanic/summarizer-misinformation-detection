@@ -308,8 +308,8 @@ export default function InputPage({ setResult }) {
         <div className="status-bar">
           <span className={`status-dot ${ollamaOk === null ? "wait" : ollamaOk ? "ok" : "fail"}`} />
           {ollamaOk === null && "Checking Ollama…"}
-          {ollamaOk === true  && "Ollama connected · llama3.2 ready"}
-          {ollamaOk === false && "Ollama offline — run: ollama serve"}
+          {ollamaOk === true  && "LLM connected · Gemini 1.5 Flash ready"}
+          
         </div>
 
         {/* Hero */}

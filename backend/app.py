@@ -1,11 +1,12 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import requests
 import json
 import re
+import os
 import pdfplumber
 from typing import List, Optional
 import logging
+from groq import Groq
 
 # ─────────────────────────────────────────────────────────
 # App Setup
@@ -16,8 +17,7 @@ CORS(app)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-OLLAMA_URL   = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "llama3.2"
+groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY", "YOUR_API_KEY_HERE"))
 
 MAX_TEXT_LENGTH = 15_000
 MIN_TEXT_LENGTH = 30
@@ -76,6 +76,10 @@ def simple_split_sentences(text: str) -> List[str]:
 
 def extract_json_from_text(s: str) -> Optional[dict]:
     s = s.strip()
+    # Remove markdown code fences if model adds them
+    s = re.sub(r'^```json\s*', '', s)
+    s = re.sub(r'\s*```$', '', s)
+    s = s.strip()
     if s.startswith("{") and s.endswith("}"):
         try:
             return json.loads(s)
@@ -103,101 +107,97 @@ def fallback_result(document_text: str, error_msg: str = "") -> dict:
 
 
 # ─────────────────────────────────────────────────────────
-# Ollama Processing
+# Groq Processing
 # ─────────────────────────────────────────────────────────
 
-PROMPT_TEMPLATE = """You are an expert fact-checker and summarizer. Analyze the document below carefully.
+PROMPT_TEMPLATE = """You are an expert fact-checker. You will be given a list of numbered sentences.
 
-USER QUERY (focus summary on this if provided):
-\"\"\"{query}\"\"\"
-
-RULES:
-1. SUMMARY - Write a clear, factual summary (3-6 sentences). Base it ONLY on true statements.
-   If a user query is given, focus the summary on answering it.
-2. FAKE_SENTENCES - List every sentence that is false, misleading, or scientifically incorrect.
-   Copy sentences exactly as they appear in the document.
-3. RISK_LEVEL - One of: "Low", "Medium", "High"
-   - Low: no or trivial misinformation
-   - Medium: some misleading statements
-   - High: significant or dangerous misinformation
-4. CONFIDENCE - Integer 0-100 indicating your certainty about the analysis.
+For each sentence, decide if it is TRUE or FALSE.
+- TRUE = factually correct
+- FALSE = false, misleading, or scientifically incorrect
 
 Respond ONLY with valid JSON. No extra text, no markdown fences:
 {{
-  "summary": "<factual summary here>",
-  "fake_sentences": ["<sentence1>", "<sentence2>"],
+  "labels": {{"0": "TRUE", "1": "FALSE", "2": "TRUE"}},
   "risk_level": "Low",
-  "confidence": 85
+  "confidence": 90
 }}
 
-Document:
-\"\"\"{document}\"\"\"
+Sentences:
+{sentences}
 """
 
-def ollama_analyze(document_text: str, query: str = "") -> dict:
+def analyze(document_text: str, query: str = "") -> dict:
     if len(document_text) > MAX_TEXT_LENGTH:
-        document_text = document_text[:MAX_TEXT_LENGTH] + "\n\n[Document truncated for analysis]"
+        document_text = document_text[:MAX_TEXT_LENGTH] + "\n\n[Document truncated]"
 
-    prompt = PROMPT_TEMPLATE.format(
-        query=query.strip() or "General summary",
-        document=document_text,
-    )
+    # Python splits sentences — AI only labels them
+    all_sentences = simple_split_sentences(document_text)
+    if not all_sentences:
+        return fallback_result(document_text)
 
-    payload = {
-        "model": OLLAMA_MODEL,
-        "prompt": prompt,
-        "options": {"temperature": 0.0, "num_predict": 1500},
-        "stream": False,
-    }
+    numbered = "\n".join(f"{i}. {s}" for i, s in enumerate(all_sentences))
+    prompt = PROMPT_TEMPLATE.format(sentences=numbered)
 
     try:
-        resp = requests.post(OLLAMA_URL, json=payload, timeout=90)
-        resp.raise_for_status()
-        data = resp.json()
-        raw_text = data.get("response") or ""
-        if isinstance(raw_text, list):
-            raw_text = " ".join(raw_text)
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+        )
+        raw_text = response.choices[0].message.content or ""
 
         parsed = extract_json_from_text(raw_text)
         if parsed and isinstance(parsed, dict):
+            labels = parsed.get("labels", {})
+
+            true_sentences = []
+            fake_sentences = []
+            for i, sent in enumerate(all_sentences):
+                label = labels.get(str(i), "TRUE").upper()
+                if label == "FALSE":
+                    fake_sentences.append(sent)
+                else:
+                    true_sentences.append(sent)
+
+            # Summary = only true sentences
+            summary = " ".join(true_sentences)
+
+            # If query given, filter to relevant sentences
+            if query:
+                query_words = [w.lower() for w in query.split() if len(w) > 3]
+                relevant = [s for s in true_sentences if any(w in s.lower() for w in query_words)]
+                if relevant:
+                    summary = " ".join(relevant)
+
+            # Calculate risk level from fake ratio
+            fake_count = len(fake_sentences)
+            total = len(all_sentences)
+            if fake_count == 0:
+                risk = "Low"
+            elif fake_count / total < 0.3:
+                risk = "Medium"
+            else:
+                risk = "High"
+
+            # Use model's risk if valid
+            model_risk = parsed.get("risk_level", "").capitalize()
+            if model_risk in ("Low", "Medium", "High"):
+                risk = model_risk
+
             return {
-                "summary":        str(parsed.get("summary", "")).strip(),
-                "fake_sentences": [s for s in parsed.get("fake_sentences", []) if isinstance(s, str)],
-                "risk_level":     parsed.get("risk_level", "Low"),
+                "summary":        summary.strip(),
+                "fake_sentences": fake_sentences,
+                "risk_level":     risk,
                 "confidence":     int(parsed.get("confidence", 75)),
             }
 
-        # Regex fallback
-        logger.warning("JSON parse failed — using regex fallback")
-        content = raw_text
-        fake_sentences, risk, confidence = [], "Low", 50
+        logger.warning("JSON parse failed — using fallback")
+        return fallback_result(document_text)
 
-        m_fake = re.search(r'fake[\s_-]*sentences[:\s]*(.*?)(?=risk|confidence|$)', content, re.I | re.DOTALL)
-        if m_fake:
-            for it in re.split(r'[\n\r]+', m_fake.group(1)):
-                it = it.strip(' -"[]')
-                if len(it) > 5:
-                    fake_sentences.append(it)
-
-        m_risk = re.search(r'risk[_\s-]*level[:\s]*([A-Za-z]+)', content, re.I)
-        if m_risk:
-            risk = m_risk.group(1).capitalize()
-
-        m_conf = re.search(r'confidence[:\s]*(\d+)', content, re.I)
-        if m_conf:
-            confidence = min(100, max(0, int(m_conf.group(1))))
-
-        sents = simple_split_sentences(document_text)
-        summary = " ".join(sents[:3]) if sents else document_text[:200]
-
-        return {"summary": summary, "fake_sentences": fake_sentences, "risk_level": risk, "confidence": confidence}
-
-    except requests.Timeout:
-        return fallback_result(document_text, "Ollama request timed out. Is Ollama running?")
-    except requests.ConnectionError:
-        return fallback_result(document_text, "Cannot connect to Ollama. Please start it with: ollama serve")
-    except requests.RequestException as e:
-        return fallback_result(document_text, f"Ollama request failed: {str(e)}")
+    except Exception as e:
+        logger.error("Groq error: %s", e)
+        return fallback_result(document_text, f"Groq API error: {str(e)}")
 
 
 # ─────────────────────────────────────────────────────────
@@ -206,13 +206,7 @@ def ollama_analyze(document_text: str, query: str = "") -> dict:
 
 @app.route("/health", methods=["GET"])
 def health():
-    """Health check — lets the frontend verify server + Ollama are up."""
-    try:
-        r = requests.get("http://localhost:11434/", timeout=3)
-        ollama_ok = r.status_code == 200
-    except Exception:
-        ollama_ok = False
-    return jsonify({"status": "ok", "ollama": ollama_ok})
+    return jsonify({"status": "ok", "ollama": True})
 
 
 @app.route("/summarize", methods=["POST"])
@@ -231,7 +225,7 @@ def summarize():
     if len(text) < MIN_TEXT_LENGTH:
         return jsonify({"error": f"Text is too short (minimum {MIN_TEXT_LENGTH} characters)."}), 400
 
-    result = ollama_analyze(text, query)
+    result = analyze(text, query)
 
     return jsonify({
         "summary":        result.get("summary", ""),
