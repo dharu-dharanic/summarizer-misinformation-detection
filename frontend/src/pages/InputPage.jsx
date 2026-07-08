@@ -49,7 +49,7 @@ export default function InputPage({ setResult }) {
         navigate("/results");
       }
     } catch {
-      setError("Cannot reach the server. Make sure Flask is running.");
+      setError("Unable to connect to the server. Please try again later.");
     } finally {
       setLoading(false);
     }
@@ -307,8 +307,8 @@ export default function InputPage({ setResult }) {
         {/* Status bar */}
         <div className="status-bar">
           <span className={`status-dot ${ollamaOk === null ? "wait" : ollamaOk ? "ok" : "fail"}`} />
-          {ollamaOk === null && "Checking Ollama…"}
-          {ollamaOk === true  && "LLM connected · Gemini 1.5 Flash ready"}
+          {ollamaOk === null && "Checking Server…"}
+          {ollamaOk === true  && "LLM connected"}
           
         </div>
 
