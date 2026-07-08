@@ -16,7 +16,7 @@ export default function InputPage({ setResult }) {
 
   // Health-check on mount
   useEffect(() => {
-    fetch("https://verifai-ohmg.onrender.com/health")
+    fetch("https://summarizer-misinformation-detection-production.up.railway.app/health")
       .then(r => r.json())
       .then(d => setOllamaOk(d.ollama))
       .catch(() => setOllamaOk(false));
@@ -40,7 +40,7 @@ export default function InputPage({ setResult }) {
     else                formData.append("file", file);
 
     try {
-      const res  = await fetch("https://verifai-ohmg.onrender.com/summarize", { method: "POST", body: formData });
+      const res  = await fetch("https://summarizer-misinformation-detection-production.up.railway.app/summarize", { method: "POST", body: formData });
       const data = await res.json();
       if (!res.ok || data.error) {
         setError(data.error || "Something went wrong.");
