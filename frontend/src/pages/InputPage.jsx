@@ -307,8 +307,9 @@ export default function InputPage({ setResult }) {
         {/* Status bar */}
         <div className="status-bar">
           <span className={`status-dot ${ollamaOk === null ? "wait" : ollamaOk ? "ok" : "fail"}`} />
-          {ollamaOk === null && "Checking Server…"}
-          {ollamaOk === true  && "LLM connected"}
+          {ollamaOk === null && "Checking server…"}
+          {ollamaOk === true  && "LLM connected · Groq llama-3.3-70b ready"}
+          {ollamaOk === false && "Server offline"}
           
         </div>
 
