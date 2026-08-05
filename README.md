@@ -2,6 +2,9 @@
 
 AI-powered document analysis: get clean summaries and instant fake-statement detection.
 
+🌐 **Live Demo:** [https://verifyai-summarizer.vercel.app/](https://verifyai-summarizer.vercel.app/)
+
+
 ---
 
 ## Quick Start
