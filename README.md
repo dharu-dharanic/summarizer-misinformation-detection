@@ -17,14 +17,8 @@ python app.py
 ```
 Flask runs at http://localhost:5000
 
-### 2. Ollama (required)
-```bash
-# Install from https://ollama.com then:
-ollama serve
-ollama pull llama3.2
-```
 
-### 3. Frontend (React)
+### 2. Frontend (React)
 ```bash
 cd frontend
 npm install
